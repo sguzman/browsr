@@ -1,0 +1,13 @@
+services:
+  browsr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: browsr
+    ports:
+      - "17373:17373"
+    volumes:
+      - ./config/server.toml:/config/server.toml:ro
+    environment:
+      BROWSR_CONFIG: /config/server.toml
+    restart: unless-stopped
