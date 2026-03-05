@@ -1,0 +1,18 @@
+# browsr server configuration
+# You can override this path with BROWSR_CONFIG=/path/to/server.toml
+
+# Address and port for HTTP + WebSocket server
+bind_host = "127.0.0.1"
+port = 17373
+
+# WebSocket endpoint for the xpose extension
+ws_path = "/ws"
+
+# Extension command timeout in milliseconds
+request_timeout_ms = 8000
+
+# Max accepted incoming websocket payload size from extension
+max_incoming_ws_bytes = 20000000
+
+# Number of recent extension events kept in memory
+recent_events_limit = 500

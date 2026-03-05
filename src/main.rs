@@ -20,7 +20,13 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() {
     init_tracing();
-    let config = AppConfig::from_env();
+    let config = match AppConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            error!(error = %error, "failed to load server config");
+            return;
+        }
+    };
     let state = Arc::new(AppState::new(config.clone()));
     let addr: SocketAddr = config.socket_addr();
 
