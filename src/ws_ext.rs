@@ -114,6 +114,9 @@ async fn process_text_message(state: &Arc<AppState>, raw: &str) -> Result<(), St
                 .to_string();
             state.resolve_pending(&id, message);
         }
+        IncomingKind::Keepalive => {
+            debug!(payload = %message, "received extension keepalive message");
+        }
         IncomingKind::Unknown => {
             warn!(payload = %message, "received unknown extension message");
         }

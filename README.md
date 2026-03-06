@@ -23,6 +23,7 @@ The extension responds with structured `response` messages, which `browsr` corre
 
 - Multi-client local HTTP API
 - Real-time extension session bridge over WebSocket
+- Read and manipulate live tabs in the current browser session
 - Command/response correlation with timeout handling
 - In-memory caching of hello/windows/tabs and recent events
 - Structured tracing logs
@@ -166,12 +167,93 @@ curl -sS "http://127.0.0.1:17373/v1/tabs?window_id=1828091131" | jq
 curl -sS "http://127.0.0.1:17373/v1/tabs?refresh=true" | jq
 ```
 
+### `GET /v1/tabs/active`
+
+Returns the active tab from the focused window or a specific window.
+
+```bash
+curl -sS http://127.0.0.1:17373/v1/tabs/active | jq
+curl -sS "http://127.0.0.1:17373/v1/tabs/active?window_id=1828091131" | jq
+```
+
+### `GET /v1/tabs/{tab_id}`
+
+Returns lightweight live state for a single tab without DOM extraction.
+
+```bash
+TAB_ID=1828085583
+curl -sS "http://127.0.0.1:17373/v1/tabs/$TAB_ID" | jq
+```
+
 ### `POST /v1/tabs/refresh`
 
 Force refresh tab cache from extension.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:17373/v1/tabs/refresh | jq
+```
+
+### `POST /v1/tabs/open`
+
+Open a new tab in the live browser session.
+
+```bash
+curl -sS -X POST http://127.0.0.1:17373/v1/tabs/open \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com","active":true}' | jq
+```
+
+### `POST /v1/tabs/{tab_id}/focus`
+
+Focus a tab and its containing window.
+
+```bash
+TAB_ID=1828085583
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/focus" | jq
+```
+
+### `POST /v1/tabs/{tab_id}/reload`
+
+Reload a tab.
+
+```bash
+TAB_ID=1828085583
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/reload" \
+  -H 'content-type: application/json' \
+  -d '{"bypass_cache":false,"wait_for_complete":true}' | jq
+```
+
+### `POST /v1/tabs/{tab_id}/move`
+
+Move a tab within its current window or to another window.
+
+```bash
+TAB_ID=1828085583
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/move" \
+  -H 'content-type: application/json' \
+  -d '{"index":0}' | jq
+```
+
+### `POST /v1/tabs/{tab_id}/close`
+
+Close a tab.
+
+```bash
+TAB_ID=1828085583
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/close" | jq
+```
+
+### `POST /v1/tab-groups`
+
+Create or update a tab group.
+
+```bash
+curl -sS -X POST http://127.0.0.1:17373/v1/tab-groups \
+  -H 'content-type: application/json' \
+  -d '{
+    "tab_ids":[1828085583,1828091599],
+    "group_properties":{"title":"Research","color":"blue","collapsed":false}
+  }' | jq
 ```
 
 ### `POST /v1/tabs/{tab_id}/snapshot`

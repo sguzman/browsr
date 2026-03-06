@@ -110,6 +110,69 @@ impl AppState {
         self.last_tabs.read().await.clone()
     }
 
+    pub async fn upsert_tab_cache_entry(&self, tab: &Value) {
+        let tab_id = match tab.get("id").and_then(Value::as_u64) {
+            Some(tab_id) => tab_id,
+            None => return,
+        };
+
+        let mut guard = self.last_tabs.write().await;
+        let tabs = guard.get_or_insert_with(|| Value::Array(Vec::new()));
+        let Some(list) = tabs.as_array_mut() else {
+            return;
+        };
+
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|entry| entry.get("id").and_then(Value::as_u64) == Some(tab_id))
+        {
+            *existing = tab.clone();
+        } else {
+            list.push(tab.clone());
+        }
+
+        sort_tabs(list);
+    }
+
+    pub async fn upsert_tab_cache_entries<'a, I>(&self, tabs: I)
+    where
+        I: IntoIterator<Item = &'a Value>,
+    {
+        for tab in tabs {
+            self.upsert_tab_cache_entry(tab).await;
+        }
+    }
+
+    pub async fn remove_tab_cache_entry(&self, tab_id: u64) {
+        let mut guard = self.last_tabs.write().await;
+        let Some(list) = guard.as_mut().and_then(Value::as_array_mut) else {
+            return;
+        };
+        list.retain(|entry| entry.get("id").and_then(Value::as_u64) != Some(tab_id));
+    }
+
+    pub async fn upsert_window_cache_entry(&self, window: &Value) {
+        let window_id = match window.get("id").and_then(Value::as_u64) {
+            Some(window_id) => window_id,
+            None => return,
+        };
+
+        let mut guard = self.last_windows.write().await;
+        let windows = guard.get_or_insert_with(|| Value::Array(Vec::new()));
+        let Some(list) = windows.as_array_mut() else {
+            return;
+        };
+
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|entry| entry.get("id").and_then(Value::as_u64) == Some(window_id))
+        {
+            *existing = window.clone();
+        } else {
+            list.push(window.clone());
+        }
+    }
+
     pub async fn push_event(&self, event: Value) {
         let mut guard = self.recent_events.lock().await;
         guard.push_back(event);
@@ -236,4 +299,16 @@ impl AppState {
             }
         }
     }
+}
+
+fn sort_tabs(list: &mut [Value]) {
+    list.sort_by_key(|tab| {
+        (
+            tab.get("windowId")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX),
+            tab.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX),
+            tab.get("id").and_then(Value::as_u64).unwrap_or(u64::MAX),
+        )
+    });
 }

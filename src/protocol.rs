@@ -34,6 +34,7 @@ pub enum IncomingKind {
     Event,
     Log,
     Response,
+    Keepalive,
     Unknown,
 }
 
@@ -43,6 +44,7 @@ pub fn classify_incoming(message: &Value) -> IncomingKind {
         Some("event") => IncomingKind::Event,
         Some("log") => IncomingKind::Log,
         Some("response") => IncomingKind::Response,
+        Some("keepalive") => IncomingKind::Keepalive,
         _ => IncomingKind::Unknown,
     }
 }

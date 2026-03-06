@@ -17,9 +17,17 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/windows", get(list_windows))
-        .route("/v1/tabs", get(list_tabs))
+        .route("/v1/tabs/active", get(get_active_tab))
+        .route("/v1/tabs/open", post(open_tab))
         .route("/v1/tabs/refresh", post(refresh_tabs))
+        .route("/v1/tabs", get(list_tabs))
+        .route("/v1/tabs/{tab_id}", get(get_tab_state))
         .route("/v1/tabs/{tab_id}/snapshot", post(snapshot_tab))
+        .route("/v1/tabs/{tab_id}/focus", post(focus_tab))
+        .route("/v1/tabs/{tab_id}/reload", post(reload_tab))
+        .route("/v1/tabs/{tab_id}/close", post(close_tab))
+        .route("/v1/tabs/{tab_id}/move", post(move_tab))
+        .route("/v1/tab-groups", post(group_tabs))
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +111,38 @@ async fn refresh_tabs(State(state): State<Arc<AppState>>) -> Result<Json<Value>,
 }
 
 #[derive(Debug, Deserialize)]
+struct ActiveTabQuery {
+    window_id: Option<u32>,
+}
+
+async fn get_active_tab(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ActiveTabQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let args = match query.window_id {
+        Some(window_id) => json!({ "windowId": window_id }),
+        None => json!({}),
+    };
+    let response = send_command_checked(&state, "get_active_tab", args).await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    Ok(Json(response))
+}
+
+async fn get_tab_state(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+) -> Result<Json<Value>, ApiError> {
+    let response =
+        send_command_checked(&state, "get_tab_state", json!({ "tabId": tab_id })).await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
 struct SnapshotRequest {
     #[serde(default = "true_value")]
     include_html: bool,
@@ -128,6 +168,176 @@ async fn snapshot_tab(
         "includeSelection": body.include_selection
     });
     let response = send_command_checked(&state, "snapshot_tab", args).await?;
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenTabRequest {
+    url: String,
+    active: Option<bool>,
+    window_id: Option<u32>,
+    index: Option<u32>,
+    opener_tab_id: Option<u32>,
+}
+
+async fn open_tab(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<OpenTabRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut args = json!({ "url": body.url });
+    if let Some(active) = body.active {
+        args["active"] = json!(active);
+    }
+    if let Some(window_id) = body.window_id {
+        args["windowId"] = json!(window_id);
+    }
+    if let Some(index) = body.index {
+        args["index"] = json!(index);
+    }
+    if let Some(opener_tab_id) = body.opener_tab_id {
+        args["openerTabId"] = json!(opener_tab_id);
+    }
+
+    let response = send_command_checked(&state, "open_tab", args).await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    Ok(Json(response))
+}
+
+async fn focus_tab(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+) -> Result<Json<Value>, ApiError> {
+    let response = send_command_checked(&state, "focus_tab", json!({ "tabId": tab_id })).await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    if let Some(window) = response.get("window") {
+        state.upsert_window_cache_entry(window).await;
+    }
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReloadTabRequest {
+    #[serde(default)]
+    bypass_cache: bool,
+    #[serde(default)]
+    wait_for_complete: bool,
+}
+
+async fn reload_tab(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+    Json(body): Json<ReloadTabRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let response = send_command_checked(
+        &state,
+        "reload_tab",
+        json!({
+            "tabId": tab_id,
+            "bypassCache": body.bypass_cache,
+            "waitForComplete": body.wait_for_complete
+        }),
+    )
+    .await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    Ok(Json(response))
+}
+
+async fn close_tab(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+) -> Result<Json<Value>, ApiError> {
+    let response = send_command_checked(&state, "close_tab", json!({ "tabId": tab_id })).await?;
+    state.remove_tab_cache_entry(tab_id as u64).await;
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct MoveTabRequest {
+    index: u32,
+    window_id: Option<u32>,
+}
+
+async fn move_tab(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+    Json(body): Json<MoveTabRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut args = json!({
+        "tabId": tab_id,
+        "index": body.index
+    });
+    if let Some(window_id) = body.window_id {
+        args["windowId"] = json!(window_id);
+    }
+
+    let response = send_command_checked(&state, "move_tab", args).await?;
+    if let Some(tab) = response.get("tab") {
+        state.upsert_tab_cache_entry(tab).await;
+    }
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePropertiesRequest {
+    window_id: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupPropertiesRequest {
+    title: Option<String>,
+    color: Option<String>,
+    collapsed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupTabsRequest {
+    tab_ids: Vec<u32>,
+    group_id: Option<u32>,
+    create_properties: Option<CreatePropertiesRequest>,
+    group_properties: Option<GroupPropertiesRequest>,
+}
+
+async fn group_tabs(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<GroupTabsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut args = json!({
+        "tabIds": body.tab_ids
+    });
+    if let Some(group_id) = body.group_id {
+        args["groupId"] = json!(group_id);
+    }
+    if let Some(create_properties) = body.create_properties {
+        let mut create = json!({});
+        if let Some(window_id) = create_properties.window_id {
+            create["windowId"] = json!(window_id);
+        }
+        args["createProperties"] = create;
+    }
+    if let Some(group_properties) = body.group_properties {
+        let mut group = json!({});
+        if let Some(title) = group_properties.title {
+            group["title"] = json!(title);
+        }
+        if let Some(color) = group_properties.color {
+            group["color"] = json!(color);
+        }
+        if let Some(collapsed) = group_properties.collapsed {
+            group["collapsed"] = json!(collapsed);
+        }
+        args["groupProperties"] = group;
+    }
+
+    let response = send_command_checked(&state, "group_tabs", args).await?;
+    if let Some(tabs) = response.get("tabs").and_then(Value::as_array) {
+        state.upsert_tab_cache_entries(tabs.iter()).await;
+    }
     Ok(Json(response))
 }
 
