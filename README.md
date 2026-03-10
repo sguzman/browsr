@@ -16,6 +16,11 @@ It is designed to work with the `xpose` Edge/Chromium extension:
 - `list_windows`
 - `list_tabs`
 - `snapshot_tab`
+- `start_import_bundle`
+- `get_import_bundle_status`
+- `get_import_bundle_manifest`
+- `get_import_bundle_asset`
+- `cancel_import_bundle`
 
 The extension responds with structured `response` messages, which `browsr` correlates by request id.
 
@@ -24,6 +29,7 @@ The extension responds with structured `response` messages, which `browsr` corre
 - Multi-client local HTTP API
 - Real-time extension session bridge over WebSocket
 - Read and manipulate live tabs in the current browser session
+- Support heavy debugger-backed tab bundle capture jobs
 - Command/response correlation with timeout handling
 - In-memory caching of hello/windows/tabs and recent events
 - Structured tracing logs
@@ -285,6 +291,87 @@ Snapshot response includes:
 - payload: `html`, `text`, `selection`
 - truncation stats: `truncation.html/text/selection`
 
+### Import Bundles
+
+Use import bundles for heavier archival-style capture where clients need the
+document plus loaded assets, not just a DOM snapshot.
+
+Recommended flow:
+1. Start a job with `POST /v1/tabs/{tab_id}/import-bundles`
+2. Poll `GET /v1/import-bundles/{job_id}`
+3. Fetch the manifest from `GET /v1/import-bundles/{job_id}/manifest`
+4. Fetch assets from `GET /v1/import-bundles/{job_id}/assets/{asset_id}`
+
+### `POST /v1/tabs/{tab_id}/import-bundles`
+
+Start a heavy import-bundle capture job.
+
+```bash
+TAB_ID=1828093415
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/import-bundles" \
+  -H 'content-type: application/json' \
+  -d '{
+    "reload": true,
+    "capture_html": true,
+    "capture_assets": true,
+    "capture_text": true,
+    "capture_selection": true,
+    "capture_screenshot": false,
+    "wait_for_network_idle_ms": 1500,
+    "settle_timeout_ms": 30000,
+    "max_asset_bytes": 5000000,
+    "max_total_bytes": 75000000
+  }' | jq
+```
+
+### `GET /v1/import-bundles/{job_id}`
+
+Get current job status.
+
+```bash
+JOB_ID="imp_abc123"
+curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID" | jq
+```
+
+### `GET /v1/import-bundles/{job_id}/manifest`
+
+Fetch the completed bundle manifest.
+
+```bash
+curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID/manifest" | jq
+```
+
+Manifest includes:
+- `bundle.tab`
+- `bundle.document`
+- `bundle.capture`
+- `bundle.screenshot`
+- `bundle.assets`
+- `bundle.export`
+
+### `GET /v1/import-bundles/{job_id}/assets/{asset_id}`
+
+Fetch a bundle asset. Supports chunked retrieval with `offset` and `length`.
+
+```bash
+ASSET_ID="document"
+curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID/assets/$ASSET_ID" | jq
+
+curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID/assets/$ASSET_ID?offset=0&length=65536" | jq
+```
+
+Special asset ids exposed by the extension:
+- `document`
+- `screenshot` when screenshot capture is enabled
+
+### `POST /v1/import-bundles/{job_id}/cancel`
+
+Cancel a running import-bundle job.
+
+```bash
+curl -sS -X POST "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID/cancel" | jq
+```
+
 ## Error Model
 
 Errors use:
@@ -305,6 +392,16 @@ Common codes:
 - `EXTENSION_TIMEOUT` (`504`)
 - `EXTENSION_ERROR` (`502`)
 - `COMMAND_SERIALIZATION_FAILED` (`500`)
+
+Import-bundle failures may surface extension-originated codes such as:
+- `IMPORT_BUNDLE_ATTACH_FAILED`
+- `IMPORT_BUNDLE_TIMEOUT`
+- `IMPORT_BUNDLE_CANCELLED`
+- `IMPORT_BUNDLE_RELOAD_FAILED`
+- `IMPORT_BUNDLE_BODY_UNAVAILABLE`
+- `IMPORT_BUNDLE_SIZE_LIMIT_EXCEEDED`
+- `HOST_PERMISSION_DENIED`
+- `UNSUPPORTED_TAB_URL`
 
 ## Logging
 

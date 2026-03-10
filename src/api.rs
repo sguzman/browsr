@@ -24,10 +24,27 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/v1/tabs/{tab_id}", get(get_tab_state))
         .route("/v1/tabs/{tab_id}/snapshot", post(snapshot_tab))
         .route("/v1/tabs/{tab_id}/focus", post(focus_tab))
+        .route(
+            "/v1/tabs/{tab_id}/import-bundles",
+            post(start_import_bundle),
+        )
         .route("/v1/tabs/{tab_id}/reload", post(reload_tab))
         .route("/v1/tabs/{tab_id}/close", post(close_tab))
         .route("/v1/tabs/{tab_id}/move", post(move_tab))
         .route("/v1/tab-groups", post(group_tabs))
+        .route("/v1/import-bundles/{job_id}", get(get_import_bundle_status))
+        .route(
+            "/v1/import-bundles/{job_id}/manifest",
+            get(get_import_bundle_manifest),
+        )
+        .route(
+            "/v1/import-bundles/{job_id}/assets/{asset_id}",
+            get(get_import_bundle_asset),
+        )
+        .route(
+            "/v1/import-bundles/{job_id}/cancel",
+            post(cancel_import_bundle),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +185,61 @@ async fn snapshot_tab(
         "includeSelection": body.include_selection
     });
     let response = send_command_checked(&state, "snapshot_tab", args).await?;
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportBundleStartRequest {
+    reload: Option<bool>,
+    capture_html: Option<bool>,
+    capture_assets: Option<bool>,
+    capture_text: Option<bool>,
+    capture_selection: Option<bool>,
+    capture_screenshot: Option<bool>,
+    wait_for_network_idle_ms: Option<u64>,
+    settle_timeout_ms: Option<u64>,
+    max_asset_bytes: Option<u64>,
+    max_total_bytes: Option<u64>,
+}
+
+async fn start_import_bundle(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+    Json(body): Json<ImportBundleStartRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let mut args = json!({ "tabId": tab_id });
+    if let Some(reload) = body.reload {
+        args["reload"] = json!(reload);
+    }
+    if let Some(capture_html) = body.capture_html {
+        args["captureHtml"] = json!(capture_html);
+    }
+    if let Some(capture_assets) = body.capture_assets {
+        args["captureAssets"] = json!(capture_assets);
+    }
+    if let Some(capture_text) = body.capture_text {
+        args["captureText"] = json!(capture_text);
+    }
+    if let Some(capture_selection) = body.capture_selection {
+        args["captureSelection"] = json!(capture_selection);
+    }
+    if let Some(capture_screenshot) = body.capture_screenshot {
+        args["captureScreenshot"] = json!(capture_screenshot);
+    }
+    if let Some(wait_for_network_idle_ms) = body.wait_for_network_idle_ms {
+        args["waitForNetworkIdleMs"] = json!(wait_for_network_idle_ms);
+    }
+    if let Some(settle_timeout_ms) = body.settle_timeout_ms {
+        args["settleTimeoutMs"] = json!(settle_timeout_ms);
+    }
+    if let Some(max_asset_bytes) = body.max_asset_bytes {
+        args["maxAssetBytes"] = json!(max_asset_bytes);
+    }
+    if let Some(max_total_bytes) = body.max_total_bytes {
+        args["maxTotalBytes"] = json!(max_total_bytes);
+    }
+
+    let response = send_command_checked(&state, "start_import_bundle", args).await?;
     Ok(Json(response))
 }
 
@@ -338,6 +410,67 @@ async fn group_tabs(
     if let Some(tabs) = response.get("tabs").and_then(Value::as_array) {
         state.upsert_tab_cache_entries(tabs.iter()).await;
     }
+    Ok(Json(response))
+}
+
+async fn get_import_bundle_status(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let response = send_command_checked(
+        &state,
+        "get_import_bundle_status",
+        json!({ "jobId": job_id }),
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+async fn get_import_bundle_manifest(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let response = send_command_checked(
+        &state,
+        "get_import_bundle_manifest",
+        json!({ "jobId": job_id }),
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportBundleAssetQuery {
+    offset: Option<u64>,
+    length: Option<u64>,
+}
+
+async fn get_import_bundle_asset(
+    State(state): State<Arc<AppState>>,
+    Path((job_id, asset_id)): Path<(String, String)>,
+    Query(query): Query<ImportBundleAssetQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let mut args = json!({
+        "jobId": job_id,
+        "assetId": asset_id
+    });
+    if let Some(offset) = query.offset {
+        args["offset"] = json!(offset);
+    }
+    if let Some(length) = query.length {
+        args["length"] = json!(length);
+    }
+
+    let response = send_command_checked(&state, "get_import_bundle_asset", args).await?;
+    Ok(Json(response))
+}
+
+async fn cancel_import_bundle(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let response =
+        send_command_checked(&state, "cancel_import_bundle", json!({ "jobId": job_id })).await?;
     Ok(Json(response))
 }
 
