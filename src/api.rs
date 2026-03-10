@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -8,6 +9,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::time::sleep;
 use tracing::{debug, info};
 
 use crate::state::{AppState, SendCommandError};
@@ -28,11 +30,19 @@ pub fn router() -> Router<Arc<AppState>> {
             "/v1/tabs/{tab_id}/import-bundles",
             post(start_import_bundle),
         )
+        .route(
+            "/v1/tabs/{tab_id}/import-bundles/wait",
+            post(start_import_bundle_and_wait),
+        )
         .route("/v1/tabs/{tab_id}/reload", post(reload_tab))
         .route("/v1/tabs/{tab_id}/close", post(close_tab))
         .route("/v1/tabs/{tab_id}/move", post(move_tab))
         .route("/v1/tab-groups", post(group_tabs))
         .route("/v1/import-bundles/{job_id}", get(get_import_bundle_status))
+        .route(
+            "/v1/import-bundles/{job_id}/wait",
+            get(wait_for_import_bundle),
+        )
         .route(
             "/v1/import-bundles/{job_id}/manifest",
             get(get_import_bundle_manifest),
@@ -200,6 +210,9 @@ struct ImportBundleStartRequest {
     settle_timeout_ms: Option<u64>,
     max_asset_bytes: Option<u64>,
     max_total_bytes: Option<u64>,
+    wait_timeout_ms: Option<u64>,
+    poll_interval_ms: Option<u64>,
+    include_manifest: Option<bool>,
 }
 
 async fn start_import_bundle(
@@ -241,6 +254,38 @@ async fn start_import_bundle(
 
     let response = send_command_checked(&state, "start_import_bundle", args).await?;
     Ok(Json(response))
+}
+
+async fn start_import_bundle_and_wait(
+    State(state): State<Arc<AppState>>,
+    Path(tab_id): Path<u32>,
+    Json(body): Json<ImportBundleStartRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let wait_timeout_ms = body.wait_timeout_ms;
+    let poll_interval_ms = body.poll_interval_ms;
+    let include_manifest = body.include_manifest.unwrap_or(true);
+
+    let args = build_import_bundle_args(tab_id, &body);
+    let started = send_command_checked(&state, "start_import_bundle", args).await?;
+    let job_id = started
+        .get("jobId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad_gateway("start_import_bundle response missing jobId"))?
+        .to_string();
+
+    let wait = wait_for_import_bundle_inner(
+        &state,
+        &job_id,
+        wait_timeout_ms,
+        poll_interval_ms,
+        include_manifest,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "started": started,
+        "result": wait
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,6 +490,13 @@ struct ImportBundleAssetQuery {
     length: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ImportBundleWaitQuery {
+    timeout_ms: Option<u64>,
+    poll_interval_ms: Option<u64>,
+    include_manifest: Option<bool>,
+}
+
 async fn get_import_bundle_asset(
     State(state): State<Arc<AppState>>,
     Path((job_id, asset_id)): Path<(String, String)>,
@@ -465,6 +517,22 @@ async fn get_import_bundle_asset(
     Ok(Json(response))
 }
 
+async fn wait_for_import_bundle(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    Query(query): Query<ImportBundleWaitQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let response = wait_for_import_bundle_inner(
+        &state,
+        &job_id,
+        query.timeout_ms,
+        query.poll_interval_ms,
+        query.include_manifest.unwrap_or(true),
+    )
+    .await?;
+    Ok(Json(response))
+}
+
 async fn cancel_import_bundle(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<String>,
@@ -472,6 +540,99 @@ async fn cancel_import_bundle(
     let response =
         send_command_checked(&state, "cancel_import_bundle", json!({ "jobId": job_id })).await?;
     Ok(Json(response))
+}
+
+fn build_import_bundle_args(tab_id: u32, body: &ImportBundleStartRequest) -> Value {
+    let mut args = json!({ "tabId": tab_id });
+    if let Some(reload) = body.reload {
+        args["reload"] = json!(reload);
+    }
+    if let Some(capture_html) = body.capture_html {
+        args["captureHtml"] = json!(capture_html);
+    }
+    if let Some(capture_assets) = body.capture_assets {
+        args["captureAssets"] = json!(capture_assets);
+    }
+    if let Some(capture_text) = body.capture_text {
+        args["captureText"] = json!(capture_text);
+    }
+    if let Some(capture_selection) = body.capture_selection {
+        args["captureSelection"] = json!(capture_selection);
+    }
+    if let Some(capture_screenshot) = body.capture_screenshot {
+        args["captureScreenshot"] = json!(capture_screenshot);
+    }
+    if let Some(wait_for_network_idle_ms) = body.wait_for_network_idle_ms {
+        args["waitForNetworkIdleMs"] = json!(wait_for_network_idle_ms);
+    }
+    if let Some(settle_timeout_ms) = body.settle_timeout_ms {
+        args["settleTimeoutMs"] = json!(settle_timeout_ms);
+    }
+    if let Some(max_asset_bytes) = body.max_asset_bytes {
+        args["maxAssetBytes"] = json!(max_asset_bytes);
+    }
+    if let Some(max_total_bytes) = body.max_total_bytes {
+        args["maxTotalBytes"] = json!(max_total_bytes);
+    }
+    args
+}
+
+async fn wait_for_import_bundle_inner(
+    state: &Arc<AppState>,
+    job_id: &str,
+    timeout_ms: Option<u64>,
+    poll_interval_ms: Option<u64>,
+    include_manifest: bool,
+) -> Result<Value, ApiError> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000).max(1_000));
+    let poll_interval = Duration::from_millis(poll_interval_ms.unwrap_or(500).max(100));
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let status = send_command_checked(
+            state,
+            "get_import_bundle_status",
+            json!({ "jobId": job_id }),
+        )
+        .await?;
+
+        let current_status = status
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::bad_gateway("import bundle status response missing status"))?;
+
+        match current_status {
+            "completed" => {
+                if include_manifest {
+                    let manifest = send_command_checked(
+                        state,
+                        "get_import_bundle_manifest",
+                        json!({ "jobId": job_id }),
+                    )
+                    .await?;
+                    return Ok(json!({
+                        "job": status,
+                        "manifest": manifest
+                    }));
+                }
+                return Ok(json!({ "job": status }));
+            }
+            "failed" | "cancelled" => {
+                return Ok(json!({ "job": status }));
+            }
+            _ => {}
+        }
+
+        if Instant::now() >= deadline {
+            return Err(ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "IMPORT_BUNDLE_WAIT_TIMEOUT",
+                format!("timed out waiting for import bundle job {job_id}"),
+            ));
+        }
+
+        sleep(poll_interval).await;
+    }
 }
 
 async fn refresh_tabs_inner(

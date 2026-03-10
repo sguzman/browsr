@@ -302,6 +302,10 @@ Recommended flow:
 3. Fetch the manifest from `GET /v1/import-bundles/{job_id}/manifest`
 4. Fetch assets from `GET /v1/import-bundles/{job_id}/assets/{asset_id}`
 
+If your client does not want to poll itself, use one of the wait endpoints:
+- `POST /v1/tabs/{tab_id}/import-bundles/wait`
+- `GET /v1/import-bundles/{job_id}/wait`
+
 ### `POST /v1/tabs/{tab_id}/import-bundles`
 
 Start a heavy import-bundle capture job.
@@ -331,6 +335,45 @@ Get current job status.
 ```bash
 JOB_ID="imp_abc123"
 curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID" | jq
+```
+
+### `GET /v1/import-bundles/{job_id}/wait`
+
+Wait until an existing import-bundle job reaches a terminal state.
+
+Query params:
+- `timeout_ms` optional, default `120000`
+- `poll_interval_ms` optional, default `500`
+- `include_manifest` optional, default `true`
+
+```bash
+curl -sS "http://127.0.0.1:17373/v1/import-bundles/$JOB_ID/wait?timeout_ms=120000&include_manifest=true" | jq
+```
+
+Returns:
+- `{ "job": ... }` for `failed` or `cancelled`
+- `{ "job": ..., "manifest": ... }` for `completed` when `include_manifest=true`
+
+### `POST /v1/tabs/{tab_id}/import-bundles/wait`
+
+Start a bundle job and block until it reaches a terminal state.
+
+This is the simplest client path when you want one request to kick off capture and wait for completion.
+
+```bash
+TAB_ID=1828093415
+curl -sS -X POST "http://127.0.0.1:17373/v1/tabs/$TAB_ID/import-bundles/wait" \
+  -H 'content-type: application/json' \
+  -d '{
+    "reload": true,
+    "capture_html": true,
+    "capture_assets": true,
+    "capture_text": true,
+    "capture_selection": true,
+    "wait_timeout_ms": 120000,
+    "poll_interval_ms": 500,
+    "include_manifest": true
+  }' | jq
 ```
 
 ### `GET /v1/import-bundles/{job_id}/manifest`
